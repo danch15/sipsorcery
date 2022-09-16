@@ -137,7 +137,6 @@ namespace SIPSorcery.SIP
                         sipMessage.SIPMessageType = SIPMessageTypesEnum.Request;
                     }
 
-                    //index of \r\n\r\n in the string,is not exactly the position in bytes buffer
                     int endHeaderPosn = message.IndexOf(m_CRLF + m_CRLF);
                     if (endHeaderPosn == -1)
                     {
@@ -152,9 +151,9 @@ namespace SIPSorcery.SIP
 
                         if (message.Length > endHeaderPosn + 4)
                         {
-                            var bodyStartPos = sipEncoding.GetByteCount(headerString) + sipEncoding.GetByteCount(sipMessage.FirstLine) + 2 + 4;
-                            sipMessage.Body = new byte[buffer.Length - bodyStartPos];
-                            Buffer.BlockCopy(buffer, bodyStartPos, sipMessage.Body, 0, sipMessage.Body.Length);
+                            int endHeaderBufferPosn = sipEncoding.GetByteCount(message.Substring(0, endHeaderPosn));
+                            sipMessage.Body = new byte[buffer.Length - (endHeaderBufferPosn + 4)];
+                            Buffer.BlockCopy(buffer, endHeaderBufferPosn + 4, sipMessage.Body, 0, buffer.Length - (endHeaderBufferPosn + 4));
                         }
                     }
 
