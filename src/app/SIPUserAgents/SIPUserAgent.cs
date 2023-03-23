@@ -50,6 +50,7 @@ namespace SIPSorcery.SIP.App
         private static readonly string m_sipReferContentType = SIPMIMETypes.REFER_CONTENT_TYPE;
         private static int WAIT_ONHOLD_TIMEOUT = SIPTimings.T1;
         private static int WAIT_DIALOG_TIMEOUT = SIPTimings.T2;
+        private readonly SemaphoreSlim m_semaphoreSlim = new SemaphoreSlim(1, 1);
 
         private static ILogger logger = Log.Logger;
 
@@ -516,35 +517,26 @@ namespace SIPSorcery.SIP.App
 
                 var sdpAnnounceAddress = mediaSession.RtpBindAddress ?? NetServices.GetLocalAddressForRemote(serverEndPoint.Address);
 
-                SDP sdp = null;
-
-                if (!string.IsNullOrEmpty(sipCallDescriptor.Content))
+                if (string.IsNullOrEmpty(sipCallDescriptor.Content))
                 {
-                    sdp = SDP.ParseSDPDescription(sipCallDescriptor.Content);
-                }
-                else
-                {
-                    sdp = mediaSession.CreateOffer(sdpAnnounceAddress);
-                }
-
-                if (sdp == null)
-                {
-                    ClientCallFailed?.Invoke(m_uac, $"Could not generate an offer.", null);
-                    CallEnded(m_callDescriptor.CallId);
-                }
-                else
-                {
-                    sipCallDescriptor.Content = sdp.ToString();
-
-                    if (ringTimeout > 0)
+                    var sdp = mediaSession.CreateOffer(sdpAnnounceAddress);
+                    if (sdp == null)
                     {
-                        logger.LogDebug($"Setting ring timeout of {ringTimeout}s.");
-                        _ringTimeout = new Timer((state) => m_uac?.Cancel(), null, ringTimeout * 1000, Timeout.Infinite);
+                        ClientCallFailed?.Invoke(m_uac, $"Could not generate an offer.", null);
+                        CallEnded(m_callDescriptor.CallId);
+                        return;
                     }
+                    sipCallDescriptor.Content = sdp.ToString();
+                }
+
+                if (ringTimeout > 0)
+                {
+                    logger.LogDebug($"Setting ring timeout of {ringTimeout}s.");
+                    _ringTimeout = new Timer((state) => m_uac?.Cancel(), null, ringTimeout * 1000, Timeout.Infinite);
+                }
 
                     // This initiates the call but does not wait for an answer.
-                    m_uac.Call(sipCallDescriptor, serverEndPoint);
-                }
+                m_uac.Call(sipCallDescriptor, serverEndPoint);
             }
             else
             {
@@ -664,6 +656,19 @@ namespace SIPSorcery.SIP.App
         /// <returns>True if the call was successfully answered or false if there was a problem
         /// such as incompatible codecs.</returns>
         public async Task<bool> Answer(SIPServerUserAgent uas, IMediaSession mediaSession, string[] customHeaders)
+        {
+            try
+            {
+                await m_semaphoreSlim.WaitAsync().ConfigureAwait(false);
+                return await AnswerSyncronized(uas, mediaSession, customHeaders).ConfigureAwait(false);
+            }
+            finally
+            {
+                m_semaphoreSlim.Release();
+            }
+        }
+
+        private async Task<bool> AnswerSyncronized(SIPServerUserAgent uas, IMediaSession mediaSession, string[] customHeaders)
         {
             if (uas.IsCancelled)
             {
@@ -1741,6 +1746,19 @@ namespace SIPSorcery.SIP.App
         /// </summary>
         private void CallEnded(string callId)
         {
+            try
+            {
+                m_semaphoreSlim.Wait();
+                CallEndedSyncronized(callId);
+            }
+            finally
+            {
+                m_semaphoreSlim.Release();
+            }
+        }
+
+        private void CallEndedSyncronized(string callId)
+        {
             if (m_callDescriptor != null)
             {
                 if (m_callDescriptor.CallId.Equals(callId, StringComparison.OrdinalIgnoreCase))
@@ -1917,6 +1935,11 @@ namespace SIPSorcery.SIP.App
             {
                 m_transport.Shutdown();
             }
+
+            // Wait for completion of CallEnded and Answer methods
+            m_semaphoreSlim.Wait();
+            m_semaphoreSlim.Release();
+            m_semaphoreSlim.Dispose();
         }
     }
 }
